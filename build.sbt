@@ -10,7 +10,9 @@ libraryDependencies ++= Seq(
   "org.apache.spark" %% "spark-core" % sparkVersion,
   "org.apache.spark" %% "spark-mllib" % sparkVersion,
   "org.apache.spark" %% "spark-sql" % sparkVersion
+
 )
+libraryDependencies += "org.scalanlp" %% "breeze" % "1.2"
 
 lazy val root = (project in file("."))
   .settings(

@@ -26,11 +26,19 @@ import org.apache.spark.ml.linalg.{Vector => MLVector, Vectors => MLVectors}
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.types._
 import scala.collection.mutable.ListBuffer
+import SparkMLUtils.fastSquaredDistance
+
 
 /**
  * Common Params for onlineKmeans and onlineKmeansModel.
  */
 trait onlineKmeansParams extends Params with HasFeaturesCol with HasPredictionCol {
+
+  final val variation = new IntParam(this,"variation", "The variation of algorithm to instantiate." +
+    "Can be 1 for my setting, 2 for algorithm2 setting  or 3 for the algorithm3 setting.",
+    ParamValidators.inRange(1,2,true,true))
+
+  setDefault(variation -> 1) //We set the default value to 1 for using my algorithm setting.
 
   final val k = new IntParam(this, "k", "The number of target clusters to create. " +
     "Must be > 1.", ParamValidators.gt(1))
@@ -58,6 +66,21 @@ class onlineKmeans(override val uid: String) extends Estimator[onlineKmeansModel
   def setPredictionCol(value: String): this.type = set(predictionCol, value)
 
   /**
+   * Set the variation of the algorithm setting you want to use.
+   *
+   * @note Input 1 for paper setting , 2 for algorithm2 of paper.
+   *       Default: 1.
+   *
+   * @param value
+   */
+  def setVariation(value: Int): this.type = set(variation -> value)
+
+  /**
+   * Get the variation of the algorithm setting you want to use.
+   */
+  def getVariation: Int = $(variation)
+
+  /**
    * Set the number of target clusters to create (k).
    *
    * @note It is possible for fewer than k clusters to
@@ -66,12 +89,15 @@ class onlineKmeans(override val uid: String) extends Estimator[onlineKmeansModel
   def setK(value: Int): this.type = set(k -> value)
 
   /**
-   * Number of clusters to create ( abs((k-15)/5) ).
+   * Number of clusters to create k or ( abs((k-15)/5) depending on setting).
    *
    * @note It is possible for fewer than k clusters to
    * be returned, for example, if there are fewer than k distinct points to cluster.
    */
-  def getK: Int = (($(k)-15)/5).abs
+  def getK: Int =  this.getVariation match{
+    case 2 => $(k)
+    case _ => (($(k)-15)/5).abs
+  }
 
   override def copy(extra: ParamMap): onlineKmeans = {
     defaultCopy(extra)
@@ -96,9 +122,9 @@ class onlineKmeans(override val uid: String) extends Estimator[onlineKmeansModel
    * @param centers
    * @return sqDists
    */
-  def computeSquaredDistances(c: MLVector, centers: List[MLVector]): List[Double] = {
+  def computeSquaredDistances(c: VectorWithNorm, centers: List[VectorWithNorm]): List[Double] = {
     val sqDists = for (center <- centers)
-      yield MLVectors.sqdist(c, center)
+      yield fastSquaredDistance(c.vector,c.norm,center.vector,center.norm)
     sqDists
   }
 
@@ -114,10 +140,11 @@ class onlineKmeans(override val uid: String) extends Estimator[onlineKmeansModel
     lazy val facilityCostDoublingFactor = 10.0
     var facilityCost = 0.0
     var centersAddedInPhase = 0
-    lazy val clusterCentersBufffer = new ListBuffer[MLVector]
+    lazy val clusterCentersBufffer = new ListBuffer[VectorWithNorm]
 
     points.forEach { point =>
-      def pointVector = point.get(0).asInstanceOf[MLVector]
+      def pointVectorwoNorm = point.get(0).asInstanceOf[MLVector]
+      def pointVector= new VectorWithNorm(pointVectorwoNorm)
 
       /**
        * The first (kSwitch) data points become cluster centers.
@@ -134,7 +161,10 @@ class onlineKmeans(override val uid: String) extends Estimator[onlineKmeansModel
         clusterCentersBufffer.append(pointVector)
 
         if (clusterCentersBufffer.length == kSwitch) {
-          lazy val minInnerClusterDistances = kSwitch + 2 * (kSwitch - getK)
+          lazy val minInnerClusterDistances = this.getVariation match{
+            case 3 => 10
+            case _ => kSwitch + 2 * (kSwitch - getK)
+          }
           lazy val initialClusterCenters = clusterCentersBufffer.toList
 
           val allSquaredDistances = (for (c <- initialClusterCenters)
@@ -146,7 +176,7 @@ class onlineKmeans(override val uid: String) extends Estimator[onlineKmeansModel
         }
       }
       else {
-        def minIndexSqDist(point: MLVector, centers: List[MLVector]) = computeSquaredDistances(point, centers).min
+        def minIndexSqDist(point: VectorWithNorm, centers: List[VectorWithNorm]) = computeSquaredDistances(point, centers).min
 
         lazy val p = (minIndexSqDist(pointVector, clusterCentersBufffer.toList) / facilityCost).min(1.0)
         lazy val rand = scala.util.Random

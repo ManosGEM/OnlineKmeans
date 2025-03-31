@@ -18,15 +18,20 @@ package OnlineKmeans
 
 import org.apache.spark.ml.Model
 import org.apache.spark.ml.param.ParamMap
-import org.apache.spark.ml.util.{DefaultParamsReadable, DefaultParamsWritable}
+import org.apache.spark.ml.util.{DefaultParamsReadable, DefaultParamsWritable, Identifiable}
 import org.apache.spark.sql.{DataFrame, Dataset}
-import org.apache.spark.ml.linalg.{Vector => MLVector, Vectors => MLVectors}
+import org.apache.spark.ml.linalg.{Vector => MLVector, Vectors}
 import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
+
+import SparkMLUtils.fastSquaredDistance
+
 import scala.collection.mutable.ListBuffer
 
 
-case class onlineKmeansModel(override val uid: String, clusters: List[MLVector])
+case class onlineKmeansModel(override val uid: String, clusters: List[VectorWithNorm])
   extends Model[onlineKmeansModel] with onlineKmeansParams with DefaultParamsWritable{
+
+  def this(clusters: List[VectorWithNorm]) = this(Identifiable.randomUID("onlineKmeansModel"),clusters)
 
   override def copy(extra: ParamMap): onlineKmeansModel = {
     defaultCopy(extra)
@@ -40,9 +45,9 @@ case class onlineKmeansModel(override val uid: String, clusters: List[MLVector])
    * @param centers
    * @return sqDists
    */
-  def computeSquaredDistances(point: MLVector, centers: List[MLVector]): List[Double] = {
+  def computeSquaredDistances(point: VectorWithNorm, centers: List[VectorWithNorm]): List[Double] = {
     val sqDists = for (center <- centers)
-      yield MLVectors.sqdist(point, center)
+      yield fastSquaredDistance(point.vector,point.norm,center.vector,center.norm)
     sqDists
   }
 
@@ -56,13 +61,14 @@ case class onlineKmeansModel(override val uid: String, clusters: List[MLVector])
   override def transform(dataset: Dataset[_]): DataFrame = {
     val predictions = new ListBuffer[Int]()
 
-    def minIndexSqDist(point: MLVector, centers: List[MLVector]) = computeSquaredDistances(point, centers)
+    def minIndexSqDist(point: VectorWithNorm, centers: List[VectorWithNorm]) = computeSquaredDistances(point, centers)
       .zipWithIndex.minBy(_._1)._2
 
     lazy val points = dataset.select($(featuresCol)).collectAsList()
 
     points.forEach { point =>
-      val pointVector = point.get(0).asInstanceOf[MLVector]
+      def pointVectorwoNorm = point.get(0).asInstanceOf[MLVector]
+      def pointVector = new VectorWithNorm(pointVectorwoNorm)
       predictions.append(minIndexSqDist(pointVector,clusters))
     }
 
@@ -97,6 +103,12 @@ case class onlineKmeansModel(override val uid: String, clusters: List[MLVector])
   override def transformSchema(schema: StructType): StructType = {
     StructType(Seq(StructField($(predictionCol), IntegerType, true)).++(schema))
   }
+
+  /**
+   * Gets the Cluster Centers
+   */
+  def getClusterCenters: Seq[MLVector] = clusters.map(_.vector)
+
 }
 
 object onlineKmeansModel extends DefaultParamsReadable[onlineKmeansModel] {
